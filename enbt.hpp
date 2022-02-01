@@ -18,14 +18,18 @@ public:
 	EnbtException() :std::exception("EnbtException") {}
 };
 
+//TO-DO
+//
+// add support for logging
+// bug fixes
+// ....
+
+
 class ENBT {
 public:
 	struct version {      //current 1.0, max 15.15
 		uint8_t Major : 4;//0x01
 		uint8_t Minor : 4;//0x00
-		//path not match as version cause file structure and types will always match with any path version,
-		//if added new type or changed structure minor will incremented, not increment if type removed or total new simpple types count not reached 5(all types reserving, not added in new paths)
-		//if minor reached 16 or structure has significant changes major increment
 	};
 
 
@@ -35,11 +39,10 @@ public:
 	//	version[1byte]  (0x0F -> 1.x   0xF0   -> x.0)(max 15.15)
 	//	value (ex: [Type_ID][type_define][type_data]
 	// 
-	//file structure for ASN:
-	//	version[1byte]  (0x0F -> 1.x   0xF0   -> x.0)(max 15.15)
-	//	[2byte as clount] [..items]
-	//		item [sero_end_str]
-	// 
+	//file structure for logh: // log headers
+	//	[(string len)]{string}
+	//	[(string len)]{string}
+	//  ...
 	
 	struct Type_ID {
 		enum class Endian : uint64_t {
@@ -50,25 +53,37 @@ public:
 			none,    //[0byte]
 			integer,
 			floating,
-			var_integer,//ony default and long length
+
+			ex_integer,
+				//tiny encoded
+				// [(00XXXXXX)], [(01XXXXXX XXXXXXXX)], etc... 00 - 1 byte,01 - 2 byte,10 - 4 byte,11 - 8 byte
+				//short is undefined
+				//default is var int
+				//long is var long
+
 			uuid,	//[16byte]
-			sarray, // [(len)]{chars} if signed, endian convert will be enabled(simple array)
+				//tiny -> 16 byte uuid/integer
+				//short -> 32 byte key/integer
+				//default -> 64 byte key/integer
+				//long -> 128 byte key/integer
+
+			string, 
+				// [(len)]{chars} if signed, endian convert will be enabled
 
 			compound,	 
-			//if compound is signed it will be use strings refered by name id
-			//len in signed mode can be only tiny and short mode
-			//[len][... items]   ((named items list))
-			//					item {name id 2byte} {type_id 1byte} (value_define_and_data)
-			// else will be used default string but 'string len' encoded as big endian which last 2 bits used as define 'string len' bytes len, ex[00XXXXXX], [01XXXXXX XXXXXXXX], etc... 00 - 1 byte,01 - 2 byte,02 - 4 byte,03 - 8 byte
-			//[len][... items]   ((named items list))
-			//					item [(len)][chars] {type_id 1byte} (value_define_and_data)
+				// else will be used default string but 'string len' encoded as big endian which last 2 bits used as define 'string len' bytes len, 
+				//[len][... items]   ((named items list))
+				//					item [(len)][chars] {type_id 1byte} (value_define_and_data)
 
-			darray,//		 [len][... items]   ((unnamed items list))
-			//				item {type_id 1byte} (value_define_and_data)
+			array,
+				//	[len][... items]   ((unnamed items list))
+				//		item {type_id 1byte} (value_define_and_data)
+				// 
+				//if signed
+				// 
+				//	[len][type_id 1byte]{... items} /unnamed items array, if contain static value size reader can get one element without readding all elems[int,double,e.t.c..]
+				//		item {value_define_and_data}
 
-
-			array,		//[len][type_id 1byte]{... items} /unnamed items array, if contain static value size reader can get one element without readding all elems[int,double,e.t.c..]
-			//				item {value_define_and_data}
 			structure, //[total types] [type_id ...] {type defies}
 			optional,// 'any value'     (contain value if is_signed == true)  /example [optional,unsigned]
 			//	 				 											  /example [optional,signed][utf8_str,tiny][3]{"Yay"}
@@ -304,7 +319,6 @@ public:
 			uint8_t*, uint16_t*,
 			uint32_t*,uint64_t*,
 			std::vector<ENBT>*,//source pointer
-			std::unordered_map<uint16_t, ENBT>*,//source pointer,
 			std::unordered_map<std::string, ENBT>*,//source pointer,
 			UUID,
 			ENBT*,nullptr_t
@@ -390,7 +404,6 @@ protected:
 		switch (data_type_id.type)
 		{
 		case Type::integer:
-		case Type::var_integer:
 			switch (data_type_id.length)
 			{
 			case  TypeLen::Tiny:
@@ -416,6 +429,24 @@ protected:
 			default:
 				return nullptr;
 			}
+		case Type::ex_integer:
+			switch (data_type_id.length)
+			{
+			case TypeLen::Tiny:
+			case TypeLen::Long:
+				if (data_type_id.is_signed)
+					return (int64_t)real_data[0];
+				else
+					return (uint64_t)real_data[0];
+			case TypeLen::Default:
+				if (data_type_id.is_signed)
+					return (int32_t)real_data[0];
+				else
+					return (uint32_t)real_data[0];
+			case TypeLen::Short:
+			default:
+				return nullptr;
+			}
 		case Type::floating:
 			switch (data_type_id.length)
 			{
@@ -427,7 +458,7 @@ protected:
 				return nullptr;
 			}
 		case Type::uuid:		return *(UUID*)real_data;
-		case Type::sarray:
+		case Type::string:
 			switch (data_type_id.length)
 			{
 			case TypeLen::Tiny:
@@ -443,13 +474,9 @@ protected:
 			}
 			return real_data;
 		case Type::array:
-		case Type::darray:	return ((std::vector<ENBT>*)data);
-		case Type::compound: {
-			if(data_type_id.is_signed)
-				return ((std::unordered_map<uint16_t, ENBT>*)data);
-			else
-				return ((std::unordered_map<std::string, ENBT>*)data);
-		}
+			return ((std::vector<ENBT>*)data);
+		case Type::compound: 
+			return ((std::unordered_map<std::string, ENBT>*)data);
 		case Type::structure:
 		case Type::optional: if (data) return ((ENBT*)data); else return nullptr;
 		case Type::bit: return (bool)data_type_id.is_signed;
@@ -460,7 +487,7 @@ protected:
 	static uint8_t* CloneData(uint8_t* data, Type_ID data_type_id, size_t data_len) {
 		switch (data_type_id.type)
 		{
-		case Type::sarray:
+		case Type::string:
 		{
 			switch (data_type_id.length)
 			{
@@ -501,13 +528,9 @@ protected:
 		}
 		break;
 		case Type::array:
-		case Type::darray:
 			return (uint8_t*)new std::vector<ENBT>(*(std::vector<ENBT>*)data);
 		case Type::compound:
-			if(data_type_id.is_signed)
-				return (uint8_t*)new std::unordered_map<uint16_t, ENBT>(*(std::unordered_map<uint16_t, ENBT>*)data);
-			else
-				return (uint8_t*)new std::unordered_map<std::string, ENBT>(*(std::unordered_map<std::string, ENBT>*)data);
+			return (uint8_t*)new std::unordered_map<std::string, ENBT>(*(std::unordered_map<std::string, ENBT>*)data);
 		case Type::structure:
 		{
 			ENBT* cloned = new ENBT[data_len];
@@ -563,14 +586,10 @@ protected:
 		case Type::floating:
 			break;
 		case Type::array:
-		case Type::darray:
 			delete (std::vector<ENBT>*)data;
 			break;
 		case Type::compound:
-			if(data_type_id.is_signed)
-				delete (std::unordered_map<uint16_t, ENBT>*)data;
-			else
-				delete (std::unordered_map<std::string, ENBT>*)data;
+			delete (std::unordered_map<std::string, ENBT>*)data;
 			break;
 		case  Type::structure:
 			delete[] (ENBT*)data;
@@ -631,9 +650,6 @@ protected:
 			data = (uint8_t*)tmp;
 		}
 	}
-
-	static const char** global_strings;
-	static uint16_t total_strings;
 
 	template <class T>
 	static size_t len(T* val) {
@@ -736,34 +752,6 @@ public:
 		data_type_id.endian = Endian::native;
 		data = (uint8_t*)new std::vector<ENBT>(array);
 	}
-	ENBT(const std::vector<ENBT>& array, Type_ID tid) {
-		if (tid.type == Type::darray);
-		else if (tid.type == Type::array) {
-			if (array.size()) {
-				Type_ID tid_check = array[0].type_id();
-				for (auto& check : array)
-					if (!check.type_equal(tid_check))
-						throw EnbtException("Invalid tid");
-			}
-		}
-		else 
-			throw EnbtException("Invalid tid");
-		checkLen(tid, array.size());
-		data_type_id = tid;
-		data = (uint8_t*)new std::vector<ENBT>(array);
-	}
-	ENBT(const std::unordered_map<uint16_t, ENBT>& compound, TypeLen len_type = TypeLen::Short) {
-		data_type_id = Type_ID{ Type::compound,len_type,true };
-		switch (len_type)
-		{
-		case TypeLen::Tiny:
-		case TypeLen::Short:
-			checkLen(data_type_id, compound.size()); break;
-		default:
-			throw EnbtException("Invalid tid");
-		}
-		data = (uint8_t*)new std::unordered_map<uint16_t, ENBT>(compound);
-	}
 	ENBT(const std::unordered_map<std::string, ENBT>& compound, TypeLen len_type = TypeLen::Long) {
 		data_type_id = Type_ID{ Type::compound,len_type,false };
 		checkLen(data_type_id, compound.size()); 
@@ -785,34 +773,6 @@ public:
 			data_type_id.length = TypeLen::Long;
 		data = (uint8_t*)new std::vector<ENBT>(std::move(array));
 	}
-	ENBT(std::vector<ENBT>&& array, Type_ID tid) {
-		if (tid.type == Type::darray);
-		else if (tid.type == Type::array) {
-			if (array.size()) {
-				Type_ID tid_check = array[0].type_id();
-				for (auto& check : array)
-					if (!check.type_equal(tid_check))
-						throw EnbtException("Invalid tid");
-			}
-		}
-		else
-			throw EnbtException("Invalid tid");
-		checkLen(tid, array.size());
-		data_type_id = tid;
-		data = (uint8_t*)new std::vector<ENBT>(std::move(array));
-	}
-	ENBT(std::unordered_map<uint16_t, ENBT>&& compound, TypeLen len_type = TypeLen::Short) {
-		data_type_id = Type_ID{ Type::compound,len_type,true };
-		switch (len_type)
-		{
-		case TypeLen::Tiny:
-		case TypeLen::Short:
-			checkLen(data_type_id, compound.size()); break;
-		default:
-			throw EnbtException("Invalid tid");
-		}
-		data = (uint8_t*)new std::unordered_map<uint16_t, ENBT>(std::move(compound));
-	}
 	ENBT(std::unordered_map<std::string, ENBT>&& compound, TypeLen len_type = TypeLen::Long) {
 		data_type_id = Type_ID{ Type::compound,len_type,false };
 		checkLen(data_type_id, compound.size());
@@ -821,7 +781,7 @@ public:
 
 	ENBT(const uint8_t* utf8_str)  {
 		size_t size = len(utf8_str);
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Tiny,false };
+		data_type_id = Type_ID{ Type::string,TypeLen::Tiny,false };
 		uint8_t* str = new uint8_t[size];
 		for (size_t i = 0; i < size; i++)
 			str[i] = utf8_str[i];
@@ -830,7 +790,7 @@ public:
 	}
 	ENBT(const uint16_t* utf16_str,std::endian str_endian = std::endian::native, bool convert_endian = true) {
 		size_t size = len(utf16_str);
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Short, str_endian,false };
+		data_type_id = Type_ID{ Type::string,TypeLen::Short, str_endian,false };
 		uint16_t* str = new uint16_t[size];
 		for (size_t i = 0; i < size; i++)
 			str[i] = utf16_str[i];
@@ -842,7 +802,7 @@ public:
 	}
 	ENBT(const uint32_t* utf32_str,std::endian str_endian = std::endian::native, bool convert_endian = true) {
 		size_t size = len(utf32_str);
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Default, str_endian,false };
+		data_type_id = Type_ID{ Type::string,TypeLen::Default, str_endian,false };
 		uint32_t* str = new uint32_t[size];
 		for (size_t i = 0; i < size; i++)
 			str[i] = utf32_str[i];
@@ -853,7 +813,7 @@ public:
 	}
 	ENBT(const uint64_t* utf64_str, std::endian str_endian = std::endian::native, bool convert_endian = true) {
 		size_t size = len(utf64_str);
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Default, str_endian,false };
+		data_type_id = Type_ID{ Type::string,TypeLen::Default, str_endian,false };
 		uint64_t* str = new uint64_t[size];
 		for (size_t i = 0; i < size; i++)
 			str[i] = utf64_str[i];
@@ -863,7 +823,7 @@ public:
 		data_len = size;
 	}
 	ENBT(const uint8_t* utf8_str,size_t slen) {
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Tiny,false };
+		data_type_id = Type_ID{ Type::string,TypeLen::Tiny,false };
 		uint8_t* str = new uint8_t[slen];
 		for (size_t i = 0; i < slen; i++)
 			str[i] = utf8_str[i];
@@ -871,7 +831,7 @@ public:
 		data_len = slen;
 	}
 	ENBT(const uint16_t* utf16_str, size_t slen,std::endian str_endian = std::endian::native, bool convert_endian = true) {
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Short, str_endian,false };
+		data_type_id = Type_ID{ Type::string,TypeLen::Short, str_endian,false };
 		uint16_t* str = new uint16_t[slen];
 		for (size_t i = 0; i < slen; i++)
 			str[i] = utf16_str[i];
@@ -883,7 +843,7 @@ public:
 		data_len = slen;
 	}
 	ENBT(const uint32_t* utf32_str, size_t slen,std::endian str_endian = std::endian::native, bool convert_endian = true)  {
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Default, str_endian,false };
+		data_type_id = Type_ID{ Type::string,TypeLen::Default, str_endian,false };
 		uint32_t* str = new uint32_t[slen];
 		for (size_t i = 0; i < slen; i++)
 			str[i] = utf32_str[i];
@@ -893,7 +853,7 @@ public:
 		data_len = slen;
 	}
 	ENBT(const uint64_t* utf64_str, size_t slen, std::endian str_endian = std::endian::native, bool convert_endian = true) {
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Long, str_endian,false };
+		data_type_id = Type_ID{ Type::string,TypeLen::Long, str_endian,false };
 		uint64_t* str = new uint64_t[slen];
 		for (size_t i = 0; i < slen; i++)
 			str[i] = utf64_str[i];
@@ -904,7 +864,7 @@ public:
 	}
 	ENBT(const int8_t* utf8_str) {
 		size_t size = len(utf8_str);
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Tiny,true };
+		data_type_id = Type_ID{ Type::string,TypeLen::Tiny,true };
 		int8_t* str = new int8_t[size];
 		for (size_t i = 0; i < size; i++)
 			str[i] = utf8_str[i];
@@ -913,7 +873,7 @@ public:
 	}
 	ENBT(const int16_t* utf16_str, std::endian str_endian = std::endian::native, bool convert_endian = true) {
 		size_t size = len(utf16_str);
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Short, str_endian,true };
+		data_type_id = Type_ID{ Type::string,TypeLen::Short, str_endian,true };
 		int16_t* str = new int16_t[size];
 		for (size_t i = 0; i < size; i++)
 			str[i] = utf16_str[i];
@@ -925,7 +885,7 @@ public:
 	}
 	ENBT(const int32_t* utf32_str, std::endian str_endian = std::endian::native, bool convert_endian = true) {
 		size_t size = len(utf32_str);
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Default, str_endian,true };
+		data_type_id = Type_ID{ Type::string,TypeLen::Default, str_endian,true };
 		int32_t* str = new int32_t[size];
 		for (size_t i = 0; i < size; i++)
 			str[i] = utf32_str[i];
@@ -936,7 +896,7 @@ public:
 	}
 	ENBT(const int64_t* utf64_str, std::endian str_endian = std::endian::native, bool convert_endian = true) {
 		size_t size = len(utf64_str);
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Default, str_endian,true };
+		data_type_id = Type_ID{ Type::string,TypeLen::Default, str_endian,true };
 		int64_t* str = new int64_t[size];
 		for (size_t i = 0; i < size; i++)
 			str[i] = utf64_str[i];
@@ -946,7 +906,7 @@ public:
 		data_len = size;
 	}
 	ENBT(const int8_t* utf8_str, size_t slen) {
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Tiny,true };
+		data_type_id = Type_ID{ Type::string,TypeLen::Tiny,true };
 		int8_t* str = new int8_t[slen];
 		for (size_t i = 0; i < slen; i++)
 			str[i] = utf8_str[i];
@@ -954,7 +914,7 @@ public:
 		data_len = slen;
 	}
 	ENBT(const int16_t* utf16_str, size_t slen, std::endian str_endian = std::endian::native, bool convert_endian = true) {
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Short, str_endian,true };
+		data_type_id = Type_ID{ Type::string,TypeLen::Short, str_endian,true };
 		int16_t* str = new int16_t[slen];
 		for (size_t i = 0; i < slen; i++)
 			str[i] = utf16_str[i];
@@ -966,7 +926,7 @@ public:
 		data_len = slen;
 	}
 	ENBT(const int32_t* utf32_str, size_t slen, std::endian str_endian = std::endian::native, bool convert_endian = true) {
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Default, str_endian,true };
+		data_type_id = Type_ID{ Type::string,TypeLen::Default, str_endian,true };
 		int32_t* str = new int32_t[slen];
 		for (size_t i = 0; i < slen; i++)
 			str[i] = utf32_str[i];
@@ -976,7 +936,7 @@ public:
 		data_len = slen;
 	}
 	ENBT(const int64_t* utf64_str, size_t slen, std::endian str_endian = std::endian::native, bool convert_endian = true) {
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Long, str_endian,true };
+		data_type_id = Type_ID{ Type::string,TypeLen::Long, str_endian,true };
 		int64_t* str = new int64_t[slen];
 		for (size_t i = 0; i < slen; i++)
 			str[i] = utf64_str[i];
@@ -988,7 +948,7 @@ public:
 	ENBT(const char* utf8_str) {
 		constexpr bool char_is_signed = (char)-1 < 0;
 		size_t size = len(utf8_str);
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Tiny,char_is_signed };
+		data_type_id = Type_ID{ Type::string,TypeLen::Tiny,char_is_signed };
 		uint8_t* str = new uint8_t[size];
 		for (size_t i = 0; i < size; i++)
 			str[i] = utf8_str[i];
@@ -997,7 +957,7 @@ public:
 	}
 	ENBT(const char* utf8_str, size_t slen) {
 		constexpr bool char_is_signed = (char)-1 < 0;
-		data_type_id = Type_ID{ Type::sarray,TypeLen::Tiny,char_is_signed };
+		data_type_id = Type_ID{ Type::string,TypeLen::Tiny,char_is_signed };
 		int8_t* str = new int8_t[slen];
 		for (size_t i = 0; i < slen; i++)
 			str[i] = utf8_str[i];
@@ -1035,7 +995,7 @@ public:
 			ConvertEndian(endian, &in, sizeof(int32_t));
 		SetData(in);
 		if(as_var)
-			data_type_id = Type_ID{ Type::var_integer,TypeLen::Default,endian,true };
+			data_type_id = Type_ID{ Type::ex_integer,TypeLen::Default,endian,true };
 		else
 			data_type_id = Type_ID{ Type::integer,TypeLen::Default,endian,true };
 	}
@@ -1044,7 +1004,7 @@ public:
 			ConvertEndian(endian, &lon, sizeof(int64_t));
 		SetData(lon);
 		if (as_var)
-			data_type_id = Type_ID{ Type::var_integer,TypeLen::Long,endian,true };
+			data_type_id = Type_ID{ Type::ex_integer,TypeLen::Long,endian,true };
 		else
 			data_type_id = Type_ID{ Type::integer,TypeLen::Long,endian,true };
 	}
@@ -1071,7 +1031,7 @@ public:
 			ConvertEndian(endian, &in, sizeof(uint32_t));
 		SetData(in);
 		if (as_var)
-			data_type_id = Type_ID{ Type::var_integer,TypeLen::Default,endian,false };
+			data_type_id = Type_ID{ Type::ex_integer,TypeLen::Default,endian,false };
 		else
 			data_type_id = Type_ID{ Type::integer,TypeLen::Default,endian,false };
 	}
@@ -1080,7 +1040,7 @@ public:
 			ConvertEndian(endian, &lon, sizeof(uint64_t));
 		SetData(lon);
 		if (as_var)
-			data_type_id = Type_ID{ Type::var_integer,TypeLen::Long,endian,false };
+			data_type_id = Type_ID{ Type::ex_integer,TypeLen::Long,endian,false };
 		else
 			data_type_id = Type_ID{ Type::integer,TypeLen::Long,endian,false };
 	}
@@ -1151,10 +1111,15 @@ public:
 				SetData(std::get<double>(val));
 			}
 			break;
-		case Type::var_integer:
+		case Type::ex_integer:
 			switch (data_type_id.length)
 			{
-			case  TypeLen::Default:
+			case TypeLen::Tiny:
+				if (data_type_id.is_signed)
+					SetData(std::get<int64_t>(val));
+				else
+					SetData(std::get<uint64_t>(val));
+			case TypeLen::Default:
 				if (data_type_id.is_signed)
 					SetData(std::get<int32_t>(val));
 				else
@@ -1168,7 +1133,7 @@ public:
 			}
 			break;
 		case Type::uuid:SetData(std::get<uint8_t*>(val), 16); break;
-		case Type::sarray: 
+		case Type::string: 
 		{
 			switch (data_type_id.length) {
 			case  TypeLen::Tiny:
@@ -1186,8 +1151,7 @@ public:
 			tid.is_signed = convert_endian;
 			break;
 		}
-		case Type::array:
-		case Type::darray:SetData(new std::vector<ENBT>(*std::get<std::vector<ENBT>*>(val))); break;
+		case Type::array:SetData(new std::vector<ENBT>(*std::get<std::vector<ENBT>*>(val))); break;
 		case Type::compound:
 			if(tid.is_signed)
 				SetData(new std::unordered_map<uint16_t, ENBT>(*std::get<std::unordered_map<uint16_t, ENBT>*>(val)));
@@ -1230,16 +1194,12 @@ public:
 		switch (tid.type)
 		{
 		case Type::compound:
-			if(tid.is_signed)
-				operator=(ENBT(std::unordered_map<uint16_t, ENBT>(), tid.length));
-			else
-				operator=(ENBT(std::unordered_map<std::string, ENBT>(), tid.length));
+			operator=(ENBT(std::unordered_map<std::string, ENBT>(), tid.length));
 			break;
 		case Type::array:
-		case Type::darray:
-			operator=(ENBT(std::vector<ENBT>(len),tid));
+			operator=(ENBT(std::vector<ENBT>(len)));
 			break;
-		case Type::sarray:
+		case Type::string:
 			if (len) {
 				switch (tid.length)
 				{
@@ -1259,7 +1219,6 @@ public:
 			}
 			data_type_id = tid;
 			data_len = len;
-
 			break;
 		case Type::optional:
 			data_type_id = tid;
@@ -1394,25 +1353,6 @@ public:
 	bool type_equal(Type_ID tid) const  {
 		return !( data_type_id != tid);
 	}
-	bool is_compoud() const {
-		return data_type_id.type == Type::compound;
-	}
-	bool is_tiny_compoud() const {
-		if (data_type_id.type != Type::compound)
-			return false;
-		return data_type_id.is_signed;
-	}
-	bool is_long_compoud() const {
-		if (data_type_id.type != Type::compound)
-			return false;
-		return !data_type_id.is_signed;
-	}
-	bool is_array() const {
-		return data_type_id.type == Type::array || data_type_id.type == Type::darray;
-	}
-	bool is_sarray() const {
-		return data_type_id.type == Type::sarray;
-	}
 	ENBT& operator[](size_t index);
 	ENBT& operator[](int index) {
 		return operator[]((size_t)index);
@@ -1424,80 +1364,6 @@ public:
 		return operator[]((size_t)index);
 	}
 	const ENBT& operator[](const char* index) const;
-
-	static std::vector<std::string> GetAStrings() {
-		std::vector<std::string> astr;
-		astr.resize(total_strings);
-		for (uint16_t s = 0; s < total_strings; s++)
-			astr[s] = global_strings[s];
-		return astr;
-	}
-	static void SetAStrings(const std::vector<std::string>& alias_strings) {
-		uint16_t ts = alias_strings.size();
-		if (ts != alias_strings.size())
-			throw std::out_of_range("Too many strings to be fit in uint16_t");
-
-		char** astrs = new char*[ts];
-		for (uint16_t i = 0; i < ts; i++) {
-			size_t str_len = alias_strings[i].size();
-			auto to_copy = alias_strings[i].c_str();
-			auto to_paste = astrs[i] = new char[str_len];
-			for (size_t j = 0; j < str_len; j++)
-				to_paste[j] = to_copy[j];
-		}
-		if (global_strings)
-			delete[] global_strings;
-		total_strings = ts;
-		global_strings = (const char**)astrs;
-	}
-	static uint16_t ToAliasedStr(const char* str) {
-		for (uint16_t i = 0; i < total_strings; i++)
-			if (strcmp(str, global_strings[i]) == 0)
-				return i;
-		throw EnbtException("NotFound");
-	}
-	static const char* FromAliasedStr(uint16_t index) {
-		if (index >= total_strings)
-			return global_strings[index];
-		else throw EnbtException("Out of range in alias strings");
-	}
-	static bool existAliasedStr(const char* str) {
-		for (uint16_t i = 0; i < total_strings; i++)
-			if (strcmp(str, global_strings[i]) == 0)
-				return true;
-		return false;
-	}
-	static bool existAliasedStr(uint16_t id) {
-		return total_strings > id;
-	}
-	ENBT& getByCompoundKey(uint16_t key) {
-		if (data_type_id.type == Type::compound) {
-			if (data_type_id.is_signed)
-				return (*(std::unordered_map<uint16_t, ENBT>*)data)[key];
-			else 
-				return (*(std::unordered_map<std::string, ENBT>*)data)[FromAliasedStr(key)];
-		}
-		else
-			throw EnbtException("This enbt is not compound");
-	}
-	bool removeCompoundKey(uint16_t key) {
-		if (data_type_id.type == Type::compound) {
-			if (data_type_id.is_signed){
-				if ((*(std::unordered_map<uint16_t, ENBT>*)data).contains(key)) {
-					(*(std::unordered_map<uint16_t, ENBT>*)data).erase(key);
-					return true;
-				}
-			}
-			else {
-				auto alased = FromAliasedStr(key);
-				if ((*(std::unordered_map<std::string, ENBT>*)data).contains(alased)) {
-					(*(std::unordered_map<std::string, ENBT>*)data).erase(alased);
-					return true;
-				}
-			}
-		}
-		return false;
-	}
 
 	size_t size() const {
 		return data_len;
@@ -1549,13 +1415,7 @@ public:
 		return data_type_id.type != Type::none;
 	}
 	bool contains(const char* index) const {
-		if (is_compoud()) {
-			if (data_type_id.is_signed)
-				return ((std::unordered_map<uint16_t, ENBT>*)data)->contains(ToAliasedStr(index));
-			else 
-				return ((std::unordered_map<std::string, ENBT>*)data)->contains(index);
-		}
-		return false;
+		return type_equal(Type::compound) ? ((std::unordered_map<std::string, ENBT>*)data)->contains(index) : false;
 	}
 	
 
@@ -1581,13 +1441,13 @@ public:
 	}
 
 	void remove(size_t index) {
-		if (is_array()) 
+		if (type_equal(Type::array))
 			((std::vector<ENBT>*)data)->erase(((std::vector<ENBT>*)data)->begin() + index);
 		else throw EnbtException("Cannont remove item from non array type");
 	}
 	void remove(std::string name);
 	size_t push(const ENBT& enbt) {
-		if (is_array()) {
+		if (type_equal(Type::array)) {
 			if (data_type_id.type == Type::array) {
 				if (data_len)
 					if (operator[](0).data_type_id != enbt.data_type_id)
@@ -1599,7 +1459,7 @@ public:
 		else throw EnbtException("Cannont push to non array type");
 	}
 	ENBT& front() {
-		if (is_array()) {
+		if (type_equal(Type::array)) {
 			if(!data_len)
 				throw EnbtException("Array empty");
 			return ((std::vector<ENBT>*)data)->front();
@@ -1607,7 +1467,7 @@ public:
 		else throw EnbtException("Cannont get front item from non array type");
 	}
 	void pop() {
-		if (is_array()) {
+		if (type_equal(Type::array)) {
 			if (!data_len)
 				throw EnbtException("Array empty");
 			((std::vector<ENBT>*)data)->pop_back();
@@ -1615,7 +1475,7 @@ public:
 		else throw EnbtException("Cannont pop front item from non array type");
 	}
 	void resize(size_t siz) {
-		if (is_array()) {
+		if (type_equal(Type::array)) {
 			((std::vector<ENBT>*)data)->resize(siz);
 			if (siz < UINT8_MAX)
 				data_type_id.length = TypeLen::Tiny;
@@ -1626,7 +1486,7 @@ public:
 			else
 				data_type_id.length = TypeLen::Long;
 		}
-		else if (is_sarray()) {
+		else if (type_equal(Type::string)) {
 			switch (data_type_id.length)
 			{
 			case TypeLen::Tiny:
@@ -1685,7 +1545,7 @@ public:
 		if (enbt.data_type_id == data_type_id && data_len == enbt.data_len) {
 			switch (data_type_id.type)
 			{
-			case Type::sarray:
+			case Type::string:
 				switch (data_type_id.length)
 				{
 				case TypeLen::Tiny:
@@ -1723,7 +1583,6 @@ public:
 				return true;
 			case Type::structure:
 			case Type::array:
-			case Type::darray:
 				return (*std::get<std::vector<ENBT>*>(content())) == (*std::get<std::vector<ENBT>*>(enbt.content()));
 			case Type::compound:
 				return (*std::get<std::unordered_map<uint16_t, ENBT>*>(content())) == (*std::get<std::unordered_map<uint16_t, ENBT>*>(enbt.content()));
@@ -1810,7 +1669,6 @@ public:
 			switch (enbt.data_type_id.type)
 			{
 			case ENBT::Type::array:
-			case ENBT::Type::darray:
 				if(in_begin)
 					pointer = new std::vector<ENBT>::iterator(
 						(*(std::vector<ENBT>*)enbt.data).begin()
@@ -1857,7 +1715,6 @@ public:
 			switch (interate_type.type)
 			{
 			case ENBT::Type::array:
-			case ENBT::Type::darray:
 				pointer = new std::vector<ENBT>::iterator(
 					(*(std::vector<ENBT>::iterator*)interator.pointer)
 				);
@@ -1882,7 +1739,6 @@ public:
 			switch (interate_type.type)
 			{
 			case ENBT::Type::array:
-			case ENBT::Type::darray:
 				(*(std::vector<ENBT>::iterator*)pointer)++;
 				break;
 			case ENBT::Type::compound:
@@ -1903,14 +1759,10 @@ public:
 			switch (interate_type.type)
 			{
 			case ENBT::Type::array:
-			case ENBT::Type::darray:
 				(*(std::vector<ENBT>::iterator*)pointer)--;
 				break;
 			case ENBT::Type::compound:
-				if (interate_type.is_signed)
-					(*(std::unordered_map<uint16_t, ENBT>::iterator*)pointer)--;
-				else
-					(*(std::unordered_map<std::string, ENBT>::iterator*)pointer)--;
+				(*(std::unordered_map<std::string, ENBT>::iterator*)pointer)--;
 				break;
 			}
 			return *this;
@@ -1925,19 +1777,12 @@ public:
 			switch (interate_type.type)
 			{
 			case ENBT::Type::array:
-			case ENBT::Type::darray:
 				return
 					(*(std::vector<ENBT>::iterator*)pointer)
 					==
 					(*(std::vector<ENBT>::iterator*)pointer);
 			case ENBT::Type::compound:
-				if (interate_type.is_signed)
-					return
-					(*(std::unordered_map<uint16_t, ENBT>::iterator*)pointer)
-					==
-					(*(std::unordered_map<uint16_t, ENBT>::iterator*)interator.pointer);
-				else
-					return
+				return
 					(*(std::unordered_map<std::string, ENBT>::iterator*)pointer)
 					==
 					(*(std::unordered_map<std::string, ENBT>::iterator*)interator.pointer);
@@ -1949,19 +1794,12 @@ public:
 			switch (interate_type.type)
 			{
 			case ENBT::Type::array:
-			case ENBT::Type::darray:
 				return
 					(*(std::vector<ENBT>::iterator*)pointer)
 					!=
 					(*(std::vector<ENBT>::iterator*)pointer);
 			case ENBT::Type::compound:
-				if (interate_type.is_signed)
-					return
-					(*(std::unordered_map<uint16_t, ENBT>::iterator*)pointer)
-					!=
-					(*(std::unordered_map<uint16_t, ENBT>::iterator*)interator.pointer);
-				else
-					return
+				return
 					(*(std::unordered_map<std::string, ENBT>::iterator*)pointer)
 					!=
 					(*(std::unordered_map<std::string, ENBT>::iterator*)interator.pointer);
@@ -1974,25 +1812,13 @@ public:
 			switch (interate_type.type)
 			{
 			case ENBT::Type::array:
-			case ENBT::Type::darray:
 				return { "", *(*(std::vector<ENBT>::iterator*)pointer) };
 			case ENBT::Type::compound:
-				if (interate_type.is_signed)
-				{
-					auto& tmp = (*(std::unordered_map<uint16_t, ENBT>::iterator*)pointer);
-					return std::pair<const std::string, const ENBT&>(
-						std::string(ENBT::FromAliasedStr(tmp->first)),
-						tmp->second
-						);
-				}
-				else
-				{
-					auto& tmp = (*(std::unordered_map<std::string, ENBT>::iterator*)pointer);
-					return std::pair<const std::string, const ENBT&>(
-						tmp->first,
-						tmp->second
-					);
-				}
+				auto& tmp = (*(std::unordered_map<std::string, ENBT>::iterator*)pointer);
+				return std::pair<const std::string, const ENBT&>(
+					tmp->first,
+					tmp->second
+				);
 			}
 			throw EnbtException("Unreachable exception in non debug enviropement");
 		}
@@ -2035,25 +1861,13 @@ public:
 			switch (interate_type.type)
 			{
 			case ENBT::Type::array:
-			case ENBT::Type::darray:
 				return { "", *(*(std::vector<ENBT>::iterator*)pointer) };
 			case ENBT::Type::compound:
-				if (interate_type.is_signed)
-				{
-					auto& tmp = (*(std::unordered_map<uint16_t, ENBT>::iterator*)pointer);
-					return std::pair<const std::string, ENBT&>(
-						std::string(ENBT::FromAliasedStr(tmp->first)),
-						tmp->second
-					);
-				}
-				else
-				{
-					auto& tmp = (*(std::unordered_map<std::string, ENBT>::iterator*)pointer);
-					return std::pair<const std::string, ENBT&>(
-						tmp->first,
-						tmp->second
-					);
-				}
+				auto& tmp = (*(std::unordered_map<std::string, ENBT>::iterator*)pointer);
+				return std::pair<const std::string, ENBT&>(
+					tmp->first,
+					tmp->second
+				);
 			}
 			throw EnbtException("Unreachable exception in non debug enviropement");
 		}
@@ -2067,14 +1881,13 @@ public:
 			interate_type = enbt.data_type_id;
 			switch (enbt.data_type_id.type)
 			{
-			case ENBT::Type::sarray:
+			case ENBT::Type::string:
 				if(in_begin)
 					pointer = const_cast<uint8_t*>(enbt.getPtr());
 				else
 					pointer = const_cast<uint8_t*>(enbt.getPtr() + enbt.size());
 				break;
 			case ENBT::Type::array:
-			case ENBT::Type::darray:
 				if (in_begin)
 					pointer = new std::vector<ENBT>::iterator(
 						(*(std::vector<ENBT>*)enbt.data).begin()
@@ -2120,24 +1933,18 @@ public:
 			interate_type = interator.interate_type;
 			switch (interate_type.type)
 			{
-			case ENBT::Type::sarray:
+			case ENBT::Type::string:
 				pointer = interator.pointer;
 				break;
 			case ENBT::Type::array:
-			case ENBT::Type::darray:
 				pointer = new std::vector<ENBT>::iterator(
 					(*(std::vector<ENBT>::iterator*)interator.pointer)
 				);
 				break;
 			case ENBT::Type::compound:
-				if (interate_type.is_signed)
-					pointer = new std::unordered_map<uint16_t, ENBT>::iterator(
-						(*(std::unordered_map<uint16_t, ENBT>::iterator*)interator.pointer)
-					);
-				else
-					pointer = new std::unordered_map<std::string, ENBT>::iterator(
-						(*(std::unordered_map<std::string, ENBT>::iterator*)interator.pointer)
-					);
+				pointer = new std::unordered_map<std::string, ENBT>::iterator(
+					(*(std::unordered_map<std::string, ENBT>::iterator*)interator.pointer)
+				);
 				break;
 			default:
 				throw EnbtException("Unreachable exception in non debug enviropement");
@@ -2148,7 +1955,7 @@ public:
 		CopyInterator& operator++() {
 			switch (interate_type.type)
 			{
-			case ENBT::Type::sarray:
+			case ENBT::Type::string:
 				switch (interate_type.length)
 				{
 				case ENBT::TypeLen::Tiny:
@@ -2168,14 +1975,10 @@ public:
 				}
 				break;
 			case ENBT::Type::array:
-			case ENBT::Type::darray:
 				(*(std::vector<ENBT>::iterator*)pointer)++;
 				break;
 			case ENBT::Type::compound:
-				if (interate_type.is_signed)
-					(*(std::unordered_map<uint16_t, ENBT>::iterator*)pointer)++;
-				else
-					(*(std::unordered_map<std::string, ENBT>::iterator*)pointer)++;
+				(*(std::unordered_map<std::string, ENBT>::iterator*)pointer)++;
 				break;
 			}
 			return *this;
@@ -2188,7 +1991,7 @@ public:
 		CopyInterator& operator--() {
 			switch (interate_type.type)
 			{
-			case ENBT::Type::sarray:
+			case ENBT::Type::string:
 				switch (interate_type.length)
 				{
 				case ENBT::TypeLen::Tiny:
@@ -2208,14 +2011,10 @@ public:
 				}
 				break;
 			case ENBT::Type::array:
-			case ENBT::Type::darray:
 				(*(std::vector<ENBT>::iterator*)pointer)--;
 				break;
 			case ENBT::Type::compound:
-				if (interate_type.is_signed)
-					(*(std::unordered_map<uint16_t, ENBT>::iterator*)pointer)--;
-				else
-					(*(std::unordered_map<std::string, ENBT>::iterator*)pointer)--;
+				(*(std::unordered_map<std::string, ENBT>::iterator*)pointer)--;
 				break;
 			}
 			return *this;
@@ -2231,22 +2030,15 @@ public:
 				return false;
 			switch (interate_type.type)
 			{
-			case ENBT::Type::sarray:
+			case ENBT::Type::string:
 				return pointer == interator.pointer;
 			case ENBT::Type::array:
-			case ENBT::Type::darray:
 				return
 					(*(std::vector<ENBT>::iterator*)pointer)
 					==
 					(*(std::vector<ENBT>::iterator*)pointer);
 			case ENBT::Type::compound:
-				if (interate_type.is_signed)
-					return
-					(*(std::unordered_map<uint16_t, ENBT>::iterator*)pointer)
-					==
-					(*(std::unordered_map<uint16_t, ENBT>::iterator*)interator.pointer);
-				else
-					return
+				return
 					(*(std::unordered_map<std::string, ENBT>::iterator*)pointer)
 					==
 					(*(std::unordered_map<std::string, ENBT>::iterator*)interator.pointer);
@@ -2259,22 +2051,15 @@ public:
 				return false; 
 			switch (interate_type.type)
 			{
-			case ENBT::Type::sarray:
+			case ENBT::Type::string:
 				return pointer == interator.pointer;
 			case ENBT::Type::array:
-			case ENBT::Type::darray:
 				return
 					(*(std::vector<ENBT>::iterator*)pointer)
 					!=
 					(*(std::vector<ENBT>::iterator*)pointer);
 			case ENBT::Type::compound:
-				if (interate_type.is_signed)
-					return
-					(*(std::unordered_map<uint16_t, ENBT>::iterator*)pointer)
-					!=
-					(*(std::unordered_map<uint16_t, ENBT>::iterator*)interator.pointer);
-				else
-					return
+				return
 					(*(std::unordered_map<std::string, ENBT>::iterator*)pointer)
 					!=
 					(*(std::unordered_map<std::string, ENBT>::iterator*)interator.pointer);
@@ -2286,7 +2071,7 @@ public:
 		std::pair<const std::string, ENBT> operator*() const {
 			switch (interate_type.type)
 			{
-			case ENBT::Type::sarray:
+			case ENBT::Type::string:
 				if(interate_type.is_signed)
 				{
 					switch (interate_type.length)
@@ -2328,25 +2113,13 @@ public:
 				}
 				break;
 			case ENBT::Type::array:
-			case ENBT::Type::darray:
 				return { "", *(*(std::vector<ENBT>::iterator*)pointer) };
 			case ENBT::Type::compound:
-				if (interate_type.is_signed)
-				{
-					auto& tmp = (*(std::unordered_map<uint16_t, ENBT>::iterator*)pointer);
-					return std::pair<const std::string, ENBT>(
-						std::string(ENBT::FromAliasedStr(tmp->first)),
-						tmp->second
-					);
-				}
-				else
-				{
-					auto& tmp = (*(std::unordered_map<std::string, ENBT>::iterator*)pointer);
-					return std::pair<const std::string, ENBT>(
-						tmp->first,
-						tmp->second
-					);
-				}
+				auto& tmp = (*(std::unordered_map<std::string, ENBT>::iterator*)pointer);
+				return std::pair<const std::string, ENBT>(
+					tmp->first,
+					tmp->second
+				);
 			}
 			throw EnbtException("Unreachable exception in non debug enviropement");
 		}
@@ -2558,42 +2331,17 @@ public:
 		write_stream << (char)ENBT_VERSION_HEX;
 	}
 
-	static void SaveAStrings(std::ostream& write_stream) {
-		auto&& temp = ENBT::GetAStrings();
-		uint16_t len = (uint16_t)temp.size();
-		if (len != temp.size())
-			throw std::overflow_error("string length too long for put to uint16_t value");
-		WriteDefineLen<uint16_t>(write_stream, len);
-		for (uint16_t i = 0; i < len; i++) {
-			auto cstr = temp[i].c_str();
-			do
-			{
-				write_stream << *cstr;
-			} while (*cstr++);
-		}
-	}
-
 	static void WriteCompoud(std::ostream& write_stream, const ENBT& val) {
-		if (val.type_id().is_signed) {
-			auto result = std::get<std::unordered_map<uint16_t, ENBT>*>(val.content());
-			WriteDefineLen(write_stream, result->size(), val.type_id());
-			for (auto& it : *result) {
-				WriteDefineLen<uint16_t>(write_stream, it.first);
-				WriteToken(write_stream, it.second);
-			}
-		} else {
-			auto result = std::get<std::unordered_map<std::string, ENBT>*>(val.content());
-			WriteDefineLen(write_stream, result->size(), val.type_id());
-			for (auto& it : *result) {
-				WriteCompressLen(write_stream, it.first.size());
-				WriteArray(write_stream, it.first.c_str(), it.first.size());
-				WriteToken(write_stream, it.second);
-			}
+		auto result = std::get<std::unordered_map<std::string, ENBT>*>(val.content());
+		WriteDefineLen(write_stream, result->size(), val.type_id());
+		for (auto& it : *result) {
+			WriteCompressLen(write_stream, it.first.size());
+			WriteArray(write_stream, it.first.c_str(), it.first.size());
+			WriteToken(write_stream, it.second);
 		}
-		
 	}
 	static void WriteArray(std::ostream& write_stream, const ENBT& val) {
-		if (!val.is_array())
+		if (!val.type_equal(ENBT::Type::array))
 			throw EnbtException("This is not array for serialize it");
 		auto result = (std::vector<ENBT>*)val.getPtr();
 		size_t len = result->size();
@@ -2707,7 +2455,7 @@ public:
 				return WriteValue<double>(write_stream, val.content(), tid.getEndian());
 			}
 			return;
-		case ENBT::Type::var_integer:
+		case ENBT::Type::ex_integer:
 			switch (tid.length)
 			{
 			case  ENBT::TypeLen::Default:
@@ -2723,8 +2471,7 @@ public:
 			}
 			return;
 		case  ENBT::Type::uuid:	return WriteValue<ENBT::UUID>(write_stream, val.content(), tid.getEndian());
-		case ENBT::Type::sarray:   return WriteSimpleArray(write_stream, val);
-		case ENBT::Type::darray:	return WriteDArray(write_stream, val);
+		case ENBT::Type::string:   return WriteSimpleArray(write_stream, val);
 		case ENBT::Type::compound:	return WriteCompoud(write_stream, val);
 		case ENBT::Type::array:	return WriteArray(write_stream, val);
 		case ENBT::Type::optional:
@@ -2900,21 +2647,12 @@ public:
 	}
 	static ENBT ReadCompoud(std::istream& read_stream, ENBT::Type_ID tid) {
 		size_t len = ReadDefineLen(read_stream, tid);
-		if(tid.is_signed){
-			std::unordered_map<uint16_t, ENBT> result;
-			for (size_t i = 0; i < len; i++) {
-				uint16_t key = ReadDefineLen<uint16_t>(read_stream);
-				result[key] = ReadToken(read_stream);
-			}
-			return result;
-		} else {
-			std::unordered_map<std::string, ENBT> result;
-			for (size_t i = 0; i < len; i++) {
-				std::string key = ReadCompoundString(read_stream);
-				result[key] = ReadToken(read_stream);
-			}
-			return result;
+		std::unordered_map<std::string, ENBT> result;
+		for (size_t i = 0; i < len; i++) {
+			std::string key = ReadCompoundString(read_stream);
+			result[key] = ReadToken(read_stream);
 		}
+		return result;
 	}
 	static std::vector<ENBT> ReadArray(std::istream& read_stream, ENBT::Type_ID tid) {
 		size_t len = ReadDefineLen(read_stream, tid);
@@ -2945,7 +2683,7 @@ public:
 			result[i] = ReadToken(read_stream);
 		return result;
 	}
-	static ENBT ReadSArray(std::istream& read_stream, ENBT::Type_ID tid) {
+	static ENBT Readstring(std::istream& read_stream, ENBT::Type_ID tid) {
 		uint64_t len = ReadCompressLen(read_stream);
 		auto endian = tid.getEndian();
 		ENBT res;
@@ -3040,7 +2778,7 @@ public:
 				return ENBT();
 			}
 		case  ENBT::Type::uuid:	return ReadValue<ENBT::UUID>(read_stream, tid.getEndian());
-		case ENBT::Type::sarray:   return ReadSArray(read_stream, tid);
+		case ENBT::Type::string:   return Readstring(read_stream, tid);
 		case ENBT::Type::darray:	return ENBT(ReadDArray(read_stream,tid), tid);
 		case ENBT::Type::compound:	return ReadCompoud(read_stream,tid);
 		case ENBT::Type::array:	return ENBT(ReadArray(read_stream,tid), tid);
@@ -3150,7 +2888,7 @@ public:
 		for (uint64_t i = 0; i < len; i++)
 			SkipToken(read_stream);
 	}
-	static void SkipSArray(std::istream& read_stream, ENBT::Type_ID tid) {
+	static void Skipstring(std::istream& read_stream, ENBT::Type_ID tid) {
 		uint64_t index = ReadCompressLen(read_stream);
 		switch (tid.length)
 		{
@@ -3204,7 +2942,7 @@ public:
 			}
 			break;
 		case  ENBT::Type::uuid:	read_stream.seekg(read_stream.tellg() += 16); break;
-		case ENBT::Type::sarray:   SkipSArray(read_stream, tid); break;
+		case ENBT::Type::string:   Skipstring(read_stream, tid); break;
 		case ENBT::Type::darray:	SkipDArray(read_stream, tid);  break;
 		case ENBT::Type::compound:	SkipCompoud(read_stream, tid); break;
 		case ENBT::Type::array:	SkipArray(read_stream, tid);   break;
@@ -3396,11 +3134,11 @@ public:
 // ENBT Example file
 ///////                       type (1 byte)                         compound len
 //	[ENBT::Type_ID{ type=compound,length = tiny,is_signed=true}][5 (1byte unsigned)]
-//		[4][{ type=sarray,length = tiny,is_signed=false}][7]["Мир!"]
+//		[4][{ type=string,length = tiny,is_signed=false}][7]["Мир!"]
 //		[0][{ type=integer,length = long,is_signed=true}][-9223372036854775808]
 //		[3][{ type=uuid}][0xD55F0C3556DA165E6F512203C78B57FF]
 //		[1][{ type=darray,length = tiny,is_signed=false}] [3]
-//			[{ type=sarray,length = tiny,is_signed=false}][307]["\"Pijamalı hasta yağız şoföre çabucak güvendi\"\"Victor jagt zwölf Boxkämpfer quer über den großen Sylter Deich\"\"съешь ещё этих мягких французских булок, да выпей чаю.\"\"Pranzo d'acqua fa volti sghembi\"\"Stróż pchnął kość w quiz gędźb vel fax myjń\"\"]
+//			[{ type=string,length = tiny,is_signed=false}][307]["\"Pijamalı hasta yağız şoföre çabucak güvendi\"\"Victor jagt zwölf Boxkämpfer quer über den großen Sylter Deich\"\"съешь ещё этих мягких французских булок, да выпей чаю.\"\"Pranzo d'acqua fa volti sghembi\"\"Stróż pchnął kość w quiz gędźb vel fax myjń\"\"]
 // 			[{ type=integer,length = long,is_signed=true}][9223372036854775807]
 //			[{ type=uuid}][0xD55F0C3556DA165E6F512203C78B57FF]
 //		
